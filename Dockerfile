@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install ONLY the shared libs needed by Chromium (not Chromium itself - Playwright manages that)
+# Install shared libs for Chromium + xvfb for virtual display
 RUN apt-get update && apt-get install -y \
     libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
     libcups2t64 libdrm2 libdbus-1-3 libxkbcommon0 \
@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
     libatspi2.0-0t64 libwayland-client0 libwayland-cursor0 \
     libwayland-egl1 libxshmfence1 libglib2.0-0t64 \
+    xvfb x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package
@@ -35,4 +36,4 @@ ENV STORAGE_PATH=/app/data/session.json
 
 EXPOSE 8080
 
-CMD ["python", "/app/server.py"]
+CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x720x24", "python", "/app/server.py"]

@@ -30,7 +30,7 @@ async def get_client():
     if client is None:
         client = PlaywrightTheOldLLM(
             base_url="https://theoldllm.vercel.app",
-            headless=True,
+            headless=False,  # xvfb provides virtual display
             storage_path=STORAGE_PATH,
         )
     if not ready:

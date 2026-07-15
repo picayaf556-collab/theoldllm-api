@@ -11,16 +11,28 @@ from .exceptions import APIError, RateLimitError, StreamError
 from .models import Model, Models, Provider
 from .streaming import ChatCompletionChunk, parse_sse_line
 
+_STEALTH_SCRIPT = """
+// Hide headless Chrome detection
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(chrome, 'runtime', { get: () => ({}) });
+
+// Override permissions query to avoid headless detection
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (params) => (
+    params.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(params)
+);
+"""
+
 
 class PlaywrightTheOldLLM:
     """Browser-based client that solves Vercel's Turnstile challenge automatically.
 
     Uses Playwright to launch a real Chromium browser, solve the Vercel
     security checkpoint (Turnstile), and then intercept API calls.
-
-    Requires playwright and a chromium browser:
-        pip install playwright
-        playwright install chromium
     """
 
     def __init__(
@@ -45,6 +57,28 @@ class PlaywrightTheOldLLM:
             "presence_penalty": 0.0,
         }
 
+    async def _simulate_human(self):
+        """Simulate human-like behavior to pass Turnstile."""
+        page = self._page
+        if not page:
+            return
+        import random
+        width, height = 1280, 720
+        # Random mouse movements
+        for _ in range(random.randint(5, 15)):
+            x = random.randint(100, width - 100)
+            y = random.randint(100, height - 100)
+            await page.mouse.move(x, y)
+            await asyncio.sleep(random.uniform(0.05, 0.3))
+        # Scroll
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.3)")
+        await asyncio.sleep(0.3)
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(0.2)
+        # Click somewhere harmless
+        await page.mouse.click(width // 2, height // 2)
+        await asyncio.sleep(0.1)
+
     async def _ensure_session(self):
         if self._page and self._session_ready.is_set():
             return
@@ -63,6 +97,7 @@ class PlaywrightTheOldLLM:
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--single-process",
+                "--disable-blink-features=AutomationControlled",
             ],
         }
         if self.proxy:
@@ -85,20 +120,8 @@ class PlaywrightTheOldLLM:
         self._context = await self._browser.new_context(**ctx_args)
         self._page = await self._context.new_page()
 
-        # Listen for all API responses
-        self._api_responses: dict[str, asyncio.Future] = {}
-
-        async def handle_response(response):
-            url = response.url
-            if self.base_url in url and ("/api/chatgpt" in url or "/api/aichat" in url):
-                request = response.request
-                req_id = id(request)
-                if req_id in self._api_responses:
-                    fut = self._api_responses.pop(req_id)
-                    if not fut.done():
-                        fut.set_result(response)
-
-        self._page.on("response", handle_response)
+        # Apply stealth patches
+        await self._page.add_init_script(_STEALTH_SCRIPT)
 
         # Navigate to the app
         try:
@@ -107,15 +130,45 @@ class PlaywrightTheOldLLM:
         except Exception:
             pass
 
-        # Wait for Turnstile to pass and page to fully load
+        # Check if Vercel challenge page loaded instead of the app
+        challenge_detected = False
         try:
-            await self._page.wait_for_selector("#root", timeout=45000)
+            title = await self._page.title()
+            if "Security Checkpoint" in title or "challenge" in await self._page.content():
+                challenge_detected = True
+        except Exception:
+            pass
+
+        if challenge_detected:
+            # Simulate human behavior to help Turnstile pass
+            await self._simulate_human()
+            # Wait for Vercel challenge to resolve automatically
+            try:
+                await self._page.wait_for_function(
+                    "document.querySelector('#root') && window.getComputedStyle(document.querySelector('#root')).display !== 'none'",
+                    timeout=45000,
+                )
+            except Exception:
+                pass
+        else:
+            # Wait for Turnstile to pass and page to fully load
+            try:
+                await self._page.wait_for_selector("#root", timeout=45000)
+            except Exception:
+                pass
+
+        # Simulate more human behavior on the actual app page
+        try:
+            await self._simulate_human()
         except Exception:
             pass
 
         # Save cookies for next time
         if self.storage_path:
-            await self._context.storage_state(path=self.storage_path)
+            try:
+                await self._context.storage_state(path=self.storage_path)
+            except Exception:
+                pass
 
         self._session_ready.set()
 
