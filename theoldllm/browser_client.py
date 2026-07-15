@@ -79,7 +79,7 @@ class PlaywrightTheOldLLM:
             "locale": "en-US",
             "viewport": {"width": 1280, "height": 720},
         }
-        if self.storage_path:
+        if self.storage_path and os.path.exists(self.storage_path):
             ctx_args["storage_state"] = self.storage_path
 
         self._context = await self._browser.new_context(**ctx_args)
@@ -101,11 +101,15 @@ class PlaywrightTheOldLLM:
         self._page.on("response", handle_response)
 
         # Navigate to the app
-        await self._page.goto(self.base_url, wait_until="networkidle")
+        try:
+            await self._page.goto(self.base_url, wait_until="domcontentloaded", timeout=60000)
+            await self._page.wait_for_load_state("networkidle", timeout=30000)
+        except Exception:
+            pass
 
         # Wait for Turnstile to pass and page to fully load
         try:
-            await self._page.wait_for_selector("#root", timeout=30000)
+            await self._page.wait_for_selector("#root", timeout=45000)
         except Exception:
             pass
 
